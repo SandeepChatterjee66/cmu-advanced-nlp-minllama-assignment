@@ -7,12 +7,14 @@ import torch.nn.functional as F
 
 from base_llama import LlamaPreTrainedModel, LlamaConfig
 from rope import apply_rotary_emb
-from utils import *
 
-# Root Mean Square Layer Normalization (https://arxiv.org/abs/1910.07467)
-# borrowed from the official Llama implementation:
-# https://github.com/facebookresearch/llama/blob/main/llama/model.py
+
 class RMSNorm(torch.nn.Module):
+    """Root Mean Square Layer Normalization Layer (https://arxiv.org/abs/1910.07467)
+
+    borrowed from the official Llama implementation https://github.com/facebookresearch/llama/blob/main/llama/model.py
+    """
+
     def __init__(self, dim: int, eps: float = 1e-6):
         """
         Initialize the RMSNorm normalization layer.
@@ -30,10 +32,10 @@ class RMSNorm(torch.nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
-    def _norm(self, x):
+    def _norm(self, x: torch.Tensor):
         """
         Compute the root mean square normalization. Use Equation 4 under
-        Section 4 of https://arxiv.org/abs/1910.07467 as a reference. Add 
+        Section 4 of https://arxiv.org/abs/1910.07467 as a reference. Add
         the given epsilon value (self.eps) to the tensor's norm (i.e. inside
         the square root in Equation 4) before normalizing the tensor.
 
@@ -43,8 +45,8 @@ class RMSNorm(torch.nn.Module):
         Returns:
             torch.Tensor: The normalized tensor.
         """
-        # todo
-        raise NotImplementedError
+        rms = torch.sqrt(torch.mean(x**2, dim=-1, keepdim=True) + self.eps)
+        return torch.div(x, rms)
 
     def forward(self, x):
         """
@@ -60,55 +62,96 @@ class RMSNorm(torch.nn.Module):
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
 
+
 class Attention(nn.Module):
+    """Attention mechanism for Llama model."""
+
     def __init__(self, config: LlamaConfig):
+        """_summary_
+
+        Args:
+            config (LlamaConfig): Configuration class for Llama model.
+
+        Attributes:
+            n_kv_heads (int): Number of heads for key and value tensors.
+            n_local_heads (int): Number of local heads.
+            n_local_kv_heads (int): Number of local heads for key and value tensors.
+            n_rep (int): Number of repetitions.
+            head_dim (int): Dimension of each head.
+            max_seq_len (int): Maximum sequence length.
+            compute_query (nn.Linear): Linear layer for computing query tensor.
+            compute_key (nn.Linear): Linear layer for computing key tensor.
+            compute_value (nn.Linear): Linear layer for computing value tensor.
+            compute_output (nn.Linear): Linear layer for computing output tensor.
+            attn_dropout (nn.Dropout): Dropout layer for attention.
+            resid_dropout (nn.Dropout): Dropout layer for residual connection.
+            dropout (float): Dropout rate.
+        """
         super().__init__()
-        self.n_kv_heads = config.n_heads if config.n_kv_heads is None else config.n_kv_heads
+        self.n_kv_heads = (
+            config.n_heads if config.n_kv_heads is None else config.n_kv_heads
+        )
         assert config.n_heads % self.n_kv_heads == 0
+
         model_parallel_size = 1
+
         self.n_local_heads = config.n_heads // model_parallel_size
         self.n_local_kv_heads = self.n_kv_heads // model_parallel_size
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
         self.head_dim = config.dim // config.n_heads
         self.max_seq_len = config.max_seq_len
-        self.compute_query = nn.Linear(config.dim, config.n_heads * self.head_dim, bias=False)
-        self.compute_key = nn.Linear(config.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.compute_value = nn.Linear(config.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.compute_output = nn.Linear(config.n_heads * self.head_dim, config.dim, bias=False)
+
+        # linear layers for computing query, key, value, and output tensors
+        self.compute_query = nn.Linear(
+            config.dim, config.n_heads * self.head_dim, bias=False
+        )
+        self.compute_key = nn.Linear(
+            config.dim, self.n_kv_heads * self.head_dim, bias=False
+        )
+        self.compute_value = nn.Linear(
+            config.dim, self.n_kv_heads * self.head_dim, bias=False
+        )
+        self.compute_output = nn.Linear(
+            config.n_heads * self.head_dim, config.dim, bias=False
+        )
+
+        # dropout layers for attention and residual connection
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
         self.dropout = config.dropout
 
-    def compute_query_key_value_scores(self,
-                                       query: torch.Tensor,
-                                       key: torch.Tensor,
-                                       value: torch.Tensor) -> torch.Tensor:
-        '''
+    def compute_query_key_value_scores(
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor:
+        """
         Jointly compute Scaled Dot Product Attention (see Section 3.2.1 in
-        https://arxiv.org/abs/1706.03762 for details). The query, key, and
-        value tensors each have shape (bs, n_local_heads, seqlen, head_dim).
+        https://arxiv.org/abs/1706.03762 for details).
         An optimal implemention will jointly computing attention for multiple
         heads (n_local_heads of them) at once using matrix/tensor operations.
 
-        Make sure to use attention_dropout (self.attn_dropout) on the computed
-        attention matrix before applying it to the value tensor.
-        '''
-        # todo
-        raise NotImplementedError
+        Args:
+            query (torch.Tensor): Query tensor with shape (bs, n_local_heads, seqlen, head_dim).
+            key (torch.Tensor): Key tensor with shape (bs, n_local_kv_heads, seqlen, head_dim).
+            value (torch.Tensor): Value tensor with shape (bs, n_local_kv_heads, seqlen, head_dim).
 
-    def forward(
-        self,
-        x: torch.Tensor
-    ):
-        '''
+        Returns:
+            torch.Tensor: Output tensor after applying Scaled Dot Product Attention. softmax(QK^T)V, shape (bs, n_local_heads, seqlen, head_dim).
+        """
+        return F.scaled_dot_product_attention(
+            query, key, value, attn_mask=self.attn_dropout
+        )
+
+    def forward(self, x: torch.Tensor):
+        """
         Llama2 uses Grouped-Query Attention. The details of GQA are actually
         not critical to solving this assignment; you are simply asked to
         compute Scaled Dot Product Attention (see above for details). GQA is
-        a memory optimization to compute multi-head attention efficiently. See
+        a memory optimization to compute multi-head attention efficiently.
+        See
         Section 2.2 in https://arxiv.org/abs/2305.13245 or
         https://ai.plainenglish.io/understanding-llama2-kv-cache-grouped-query-attention-rotary-embedding-and-more-c17e5f49a6d7
         for details.
-        '''
+        """
         batch_size, seqlen, _ = x.shape
 
         query = self.compute_query(x)
@@ -143,21 +186,38 @@ class Attention(nn.Module):
 
 class FeedForward(nn.Module):
     def __init__(self, dim: int, hidden_dim: int, multiple_of: int, dropout: float):
+        """Feed forward network with SwiGLU activation function.
+
+        Args:
+            dim (int): Dimension of the input tensor.
+            hidden_dim (int): Dimension of the hidden layer.
+            multiple_of (int): Multiple of the hidden dimension.
+            dropout (float): Dropout rate.
+
+        Attributes:
+            w1 (nn.Linear): Linear layer for the first hidden layer.
+            w2 (nn.Linear): Linear layer for the second hidden layer.
+            w3 (nn.Linear): Linear layer for the third hidden layer.
+            dropout (nn.Dropout): Dropout layer.
+        """
         super().__init__()
+
         if hidden_dim is None:
             hidden_dim = 4 * dim
             hidden_dim = int(2 * hidden_dim / 3)
             hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+
         self.w1 = nn.Linear(dim, hidden_dim, bias=False)
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
         self.dropout = nn.Dropout(dropout)
 
     def SwiGLU(self, x: torch.Tensor) -> torch.Tensor:
-        '''
+        """
         Compute the SwiGLU activation function (see Section 2 in
-        https://arxiv.org/abs/2204.02311
-        '''
+        https://arxiv.org/abs/2204.02311 for details).
+
+        """
         return F.silu(self.w1(x)) * self.w3(x)
 
     def forward(self, x):
@@ -165,11 +225,32 @@ class FeedForward(nn.Module):
 
 
 class LlamaLayer(nn.Module):
+    """Basic transformer building block."""
+
     def __init__(self, layer_id: int, config: LlamaConfig):
+        """
+        Initialize a LlamaLayer, which is a basic transformer building block.
+
+        Args:
+            layer_id (int): Layer ID.
+            config (LlamaConfig): Configuration class for Llama model.
+
+        Attributes:
+            n_heads (int): Number of heads.
+            dim (int): Dimension of the input tensor.
+            head_dim (int): Dimension of each head.
+            layer_id (int): Layer ID.
+            attention (Attention): Attention module.
+            feed_forward (FeedForward): Feed forward module.
+            attention_norm (RMSNorm): Layer normalization for attention.
+            ffn_norm (RMSNorm): Layer normalization for feed forward.
+        """
         super().__init__()
         self.n_heads = config.n_heads
         self.dim = config.dim
         self.head_dim = config.dim // config.n_heads
+        self.layer_id = layer_id
+
         self.attention = Attention(config)
         self.feed_forward = FeedForward(
             dim=config.dim,
@@ -177,144 +258,257 @@ class LlamaLayer(nn.Module):
             multiple_of=config.multiple_of,
             dropout=config.dropout,
         )
-        self.layer_id = layer_id
         self.attention_norm = RMSNorm(config.dim, eps=config.layer_norm_eps)
         self.ffn_norm = RMSNorm(config.dim, eps=config.layer_norm_eps)
 
-    def forward(self, x):
-        '''
-        This is the forward pass of the basic transformer building block. This is a
+    def forward(self, x: torch.Tensor):
+        """
+        Forward pass of the basic transformer building block. This is a
         modernized version of the block shown on the left of Figure 1 on
         https://arxiv.org/pdf/1706.03762.pdf.
 
         The transformer block should consist of:
         1) layer normalization of the input (via Root Mean Square layer normalization)
         2) self-attention on the layer-normalized input
-        3) a residual connection (i.e., add the input to the output of the self-attention)
+        3) a residual connection from the unnormalized input to the output of the self-attention
         3) layer normalization on the output of the self-attention
         4) a feed-forward network on the layer-normalized output of the self-attention
-        5) add a residual connection from the unnormalized self-attention output to the
-           output of the feed-forward network
-        '''
-        # todo
-        raise NotImplementedError
+        5) add a residual connection from the unnormalized self-attention output to the output of the feed-forward network
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor.
+        """
+        # layer normalization of the input
+        x_norm = self.attention_norm(x)
+        # self-attention on the layer-normalized input
+        attn_output = self.attention(x_norm)
+        # residual connection
+        x = x + attn_output
+
+        # layer normalization on the output of the self-attention
+        x_norm = self.ffn_norm(x)
+        # feed-forward network on the layer-normalized output of the self-attention
+        ffn_output = self.feed_forward(x_norm)
+        # add a residual connection from the unnormalized self-attention output to the output of the feed-forward network
+        x = x + ffn_output
+        return x
+
 
 class Llama(LlamaPreTrainedModel):
+    """Llama model class."""
+
     def __init__(self, config: LlamaConfig):
-        '''
-        You will probably never need to call this function, unless you decide
-        to pretrain a Llama model from scratch.
-        '''
+        """Initialize the Llama model using the given configuration.
+
+        Args:
+            config (LlamaConfig): Configuration class for Llama model.
+
+        Attributes:
+            params (LlamaConfig): Stores the configuration passed to the model.
+            vocab_size (int): Vocabulary size.
+            n_layers (int): Number of transformer layers.
+
+            tok_embeddings (nn.Embedding): Embedding layer for token inputs.
+            dropout (nn.Dropout): Dropout layer to prevent overfitting.
+            layers (nn.ModuleList): List of transformer layers (LlamaLayer).
+            norm (RMSNorm): Normalization layer applied at the end of the model.
+            output (nn.Linear): Linear layer that maps the final output vectors to a vocabulary-sized space.
+        """
         super().__init__(config)
         self.params = config
         self.vocab_size = config.vocab_size
         self.n_layers = config.n_layers
 
+        # Embedding layer for converting token IDs to vectors.
         self.tok_embeddings = nn.Embedding(config.vocab_size, config.dim)
+
+        # Dropout layer applied to embeddings and sub-layers.
         self.dropout = nn.Dropout(config.dropout)
-        self.layers = torch.nn.ModuleList()
-        for layer_id in range(config.n_layers):
-            self.layers.append(LlamaLayer(layer_id, config))
+
+        # Stack of transformer layers defined in LlamaLayer class.
+        self.layers = nn.ModuleList(
+            [LlamaLayer(layer_id, config) for layer_id in range(config.n_layers)]
+        )
+
+        # Normalization layer applied to the final output of the transformer stack.
         self.norm = RMSNorm(config.dim, eps=config.layer_norm_eps)
+
+        # Output layer that maps the final output vectors to a vocabulary-sized space.
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
         # share the unembedding parameters with the embedding parameters
-        self.tok_embeddings.weight = self.output.weight # https://paperswithcode.com/method/weight-tying
+        # which can lead to more efficient learning and reduced model size
+        # https://paperswithcode.com/method/weight-tying
+        self.tok_embeddings.weight = self.output.weight
 
         # some useful precompute for the RoPE relative positional embeddings
 
         # init all weights
         self.apply(self._init_weights)
+
         # apply special scaled init to the residual projections, per GPT-2 paper
+        # adjusting the scale for better training stability.
         for pn, p in self.named_parameters():
-            if pn.endswith('w3.weight') or pn.endswith('compute_output.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layers))
+            if pn.endswith("w3.weight") or pn.endswith("compute_output.weight"):
+                nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layers))
 
-    def _init_weights(self, module):
+    def _init_weights(self, module: nn.Module):
+        """Initialize the weights for Linear and Embedding layers."""
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
+                nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, tokens: torch.Tensor, targets: Optional[torch.Tensor] = None) -> torch.Tensor:
-        _batch_size, seqlen = tokens.shape
-        h = self.tok_embeddings(tokens)
-        h = self.dropout(h)
+    def forward(
+        self, tokens: torch.Tensor, targets: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Defines the forward pass of the Llama model.
 
+        Args:
+            tokens (torch.Tensor): Input token indices.
+            targets (Optional[torch.Tensor]): Target token indices for training.
+
+        Returns:
+            Tuple containing:
+            - logits: Logits over the vocabulary.
+            - h: Hidden states of the last layer.
+        """
+        _batch_size, _ = tokens.shape  # batch size, sequence length
+
+        # Embed tokens and apply dropout.
+        h = self.dropout(self.tok_embeddings(tokens))
+
+        # Pass through each transformer layer.
         for layer in self.layers:
             h = layer(h)
+
+        # Apply normalization to the output of the last layer.
         h = self.norm(h)
 
+        # Compute logits. During training, compute over all positions;
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.output(h)
+
+        # During inference, only forward the output on the very last position
+        # (i.e. the last token in the sequence) for mini-optimization
         else:
-            # inference-time mini-optimization: only forward the output on the very last position
-            logits = self.output(h[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            logits = self.output(
+                h[:, [-1], :]
+            )  # note: using list [-1] to preserve the time dim
 
         return logits, h
 
     @torch.inference_mode()
-    def generate(self, idx, max_new_tokens, temperature=1.0):
+    def generate(
+        self, idx: torch.Tensor, max_new_tokens: int, temperature: float = 1.0
+    ) -> torch.Tensor:
         """
-        Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
-        the sequence max_new_tokens times, feeding the predictions back into the model each time.
-        We perform this generation using basic temperature sampling. Note that we are not using
-        nucleus sampling (i.e. limiting ourselves to sampling from the top-k most probable tokens
-        at each timestep), though this is often used in conjunction with temperature sampling,
-        Most likely you'll want to make sure to be in model.eval() mode of operation for this.
-        Also note this is a super inefficient version of sampling with no key/value cache.
+        Generate new tokens given an initial sequence of token indices using temperature sampling.
+
+        Args:
+            idx (torch.Tensor): A tensor of token indices with shape (batch_size, sequence_length).
+            max_new_tokens (int): Maximum number of new tokens to generate.
+            temperature (float, optional):
+                Sampling temperature; values greater than 1.0 increase diversity, values less than 1.0 increase confidence. Default is 1.0.
+
+        Returns:
+            torch.Tensor: The tensor containing the original and the newly generated tokens.
+
+        Note:
+            - This function uses temperature sampling which modifies the likelihood of the predictions. We are not using nucleus sampling (i.e. limiting ourselves to sampling from the top-k most probable tokens at each timestep), though this is often used in conjunction with temperature sampling.
+            - It is advised to use the model in the model.eval() mode during generation to disable dropout effects.
+            - This implementation does NOT use caching mechanisms for keys/values which can affect efficiency.
         """
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = idx if idx.size(1) <= self.params.max_seq_len else idx[:, -self.params.max_seq_len:]
-            # forward the model to get the logits for the index in the sequence
+            idx_cond = (
+                idx
+                if idx.size(1) <= self.params.max_seq_len
+                else idx[:, -self.params.max_seq_len :]
+            )
+            # forward the model to get the logits for the last index in the sequence
             logits, _ = self(idx_cond)
-            logits = logits[:, -1, :] # crop to just the final time step
-            # todo
-            raise NotImplementedError
+            logits = logits[:, -1, :]  # get the logits at the final time step
 
-            if temperature == 0.0:
-                # select the single most likely index
-                idx_next = None
+            # Generate the next token index using temperature sampling
+            # If temperature is close to 0, select the single most likely index
+            if abs(temperature) < 1e-6:
+                idx_next = torch.argmax(logits, dim=-1, keepdim=True)
+
+            # else, sample from the logits to introduce randomness for the next token
             else:
-                '''
-                Perform temperature sampling:
-                1) identify  the logits at the final step.
-                2) scale (divide) these probabilities by the given temperature.
-                3) normalize the scaled logits with a softmax to obtain scaled probabilities.
-                4) sample from the scaled probability distribution.
+                # scale (divide) the logits/probabilities by the given temperature
+                idx_next = logits / temperature
 
-                Note that we are not using top-k sampling/nucleus sampling in this procedure.
-                '''
-                idx_next = None
+                # normalize the scaled logits with a softmax to obtain probabilities
+                idx_next = F.softmax(idx_next, dim=-1)
+
+                # sample from the scaled probability distribution
+                idx_next = torch.multinomial(idx_next, num_samples=1)
+
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
 
-
         return idx
 
-def load_pretrained(checkpoint):
-  device = 'cuda' if torch.cuda.is_available() else 'cpu' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
-  #dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32' or 'bfloat16' or 'float16'
-  dtype = "float32"
 
-  torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
-  torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
-  device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
-  ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
-  ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
+def load_pretrained(checkpoint: str) -> Llama:
+    """Load a pre-trained Llama model from a checkpoint file and return the model."""
 
-  # init from a model saved in a specific directory
-  checkpoint_dict = torch.load(checkpoint, map_location=device)
-  config = LlamaConfig(**checkpoint_dict['model_args'])
-  model = Llama(config)
-  state_dict = checkpoint_dict['model']
-  unwanted_prefix = '_orig_mod.'
-  for k,v in list(state_dict.items()):
-      if k.startswith(unwanted_prefix):
-          state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
-  model.load_state_dict(state_dict, strict=False)
-  return model
+    # Determine the device to use for the model
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
+
+    # Decide mixed precision based on device availability
+    dtype = (
+        "bfloat16"
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+        else "float32"  # 'float32' or 'bfloat16' or 'float16'
+    )
+
+    # Adjust settings for CUDA to allow TensorFlow32 precision if available
+    if device == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True  # Allow TensorFlow32 on matmul
+        torch.backends.cudnn.allow_tf32 = True  # Allow TensorFlow32 on cuDNN
+
+    # Setup automatic mixed precision context if not on CPU
+    device_type = device if device in ["cuda", "mps"] else "cpu"
+    ptdtype = {
+        "float32": torch.float32,
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+    }[dtype]
+
+    ctx = (
+        nullcontext()
+        if device_type == "cpu"
+        else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
+    )
+
+    # Load the model checkpoint to the selected device
+    # Apply automatic mixed precision context if relevant
+    with ctx:
+        # init from a model saved in a specific directory
+        checkpoint_dict = torch.load(checkpoint, map_location=device)
+        config = LlamaConfig(**checkpoint_dict["model_args"])
+        model = Llama(config)
+        state_dict = checkpoint_dict["model"]
+
+        # If there are prefixed keys in the state dict (often from distributed training), adjust them
+        unwanted_prefix = "_orig_mod."
+        for k, v in list(state_dict.items()):
+            if k.startswith(unwanted_prefix):
+                state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
+
+        model.load_state_dict(state_dict, strict=False)
+        return model
