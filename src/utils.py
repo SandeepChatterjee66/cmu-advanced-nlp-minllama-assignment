@@ -1,6 +1,3 @@
-"""Util module handling caching and retrieval of files, primarily aimed at managing machine learning model files from the Hugging Face ecosystem, specifically targeting PyTorch models
-"""
-
 import copy
 import json
 import os

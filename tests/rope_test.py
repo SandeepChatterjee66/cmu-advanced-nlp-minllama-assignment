@@ -1,7 +1,13 @@
-import torch
-import numpy as np
+import os
+import sys
 
-from rope import apply_rotary_emb
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+import numpy as np
+import torch
+
+from src.rope import apply_rotary_emb
+
 
 seed = 0
 
@@ -32,7 +38,7 @@ def test_apply_rotary_emb() -> tuple[torch.Tensor, torch.Tensor]:
 
 actual_query_rope_embedding, actual_key_rope_embedding = test_apply_rotary_emb()
 ref_query_rope_embedding, ref_key_rope_embedding = torch.load(
-    "./rotary_embedding_actual.data"
+    "tests/rotary_embedding_actual.data"
 )
 assert (
     actual_query_rope_embedding.shape == ref_query_rope_embedding.shape

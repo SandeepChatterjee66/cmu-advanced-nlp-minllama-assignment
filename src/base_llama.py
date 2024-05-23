@@ -1,9 +1,9 @@
+import re
 from dataclasses import dataclass
 
-import re
-from torch import dtype
-from config import LlamaConfig
-from utils import *
+from torch import dtype, nn
+
+from .config import LlamaConfig
 
 
 class LlamaPreTrainedModel(nn.Module):

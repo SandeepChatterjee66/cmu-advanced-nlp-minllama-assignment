@@ -1,9 +1,11 @@
-from typing import Union, Tuple, Dict, Any, Optional
-import os
 import json
+import os
 from collections import OrderedDict
+from typing import Any, Dict, Optional, Tuple, Union
+
 import torch
-from utils import CONFIG_NAME, hf_bucket_url, cached_path, is_remote_url
+
+from .utils import CONFIG_NAME, cached_path, hf_bucket_url, is_remote_url
 
 
 class PretrainedConfig(object):
