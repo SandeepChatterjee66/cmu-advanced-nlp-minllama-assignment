@@ -21,9 +21,7 @@ def construct_key() -> torch.Tensor:
 
 
 def test_apply_rotary_emb() -> tuple[torch.Tensor, torch.Tensor]:
-    rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
-    model = torch.nn.Linear(3, 2, bias=False)
 
     test_query = construct_query()
     test_key = construct_key()
@@ -36,7 +34,23 @@ actual_query_rope_embedding, actual_key_rope_embedding = test_apply_rotary_emb()
 ref_query_rope_embedding, ref_key_rope_embedding = torch.load(
     "./rotary_embedding_actual.data"
 )
+assert (
+    actual_query_rope_embedding.shape == ref_query_rope_embedding.shape
+), f"Query shape didn't match. Expected: {ref_query_rope_embedding.shape}, but got {actual_query_rope_embedding.shape}"
+assert (
+    actual_key_rope_embedding.shape == ref_key_rope_embedding.shape
+), f"Key shape didn't match. Expected: {ref_key_rope_embedding.shape}, but got {actual_key_rope_embedding.shape}"
 
-assert torch.allclose(ref_query_rope_embedding, actual_query_rope_embedding)
-assert torch.allclose(ref_key_rope_embedding, actual_key_rope_embedding)
+assert torch.allclose(ref_query_rope_embedding, actual_query_rope_embedding), (
+    "Expected query: ",
+    ref_query_rope_embedding,
+    "Actual query: ",
+    actual_query_rope_embedding,
+)
+assert torch.allclose(ref_key_rope_embedding, actual_key_rope_embedding), (
+    "Expected key: ",
+    ref_key_rope_embedding,
+    "Actual key: ",
+    actual_key_rope_embedding,
+)
 print("Rotary embedding test passed!")
