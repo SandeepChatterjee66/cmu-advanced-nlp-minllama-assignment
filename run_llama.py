@@ -1,44 +1,51 @@
-from contextlib import nullcontext
+import argparse
 import json
-import time, random, numpy as np, argparse, sys, re, os
+import os
+import random
+import re
+import sys
+import time
+from contextlib import nullcontext
 from types import SimpleNamespace
+from typing import Optional
 
+import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import (
+    accuracy_score,
     classification_report,
     f1_score,
     recall_score,
-    accuracy_score,
 )
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 # change it with respect to the original model
-from classifier import LlamaZeroShotClassifier, LlamaEmbeddingClassifier
-from llama import Llama, load_pretrained
-from optimizer import AdamW
-from tokenizer import Tokenizer
-from tqdm import tqdm
-from typing import Optional
-
+from src.classifier import LlamaEmbeddingClassifier, LlamaZeroShotClassifier
+from src.llama import Llama, load_pretrained
+from src.optimizer import AdamW
+from src.tokenizer import Tokenizer
 
 TQDM_DISABLE = False
 
 
-# fix the random seed
 def seed_everything(seed=11711):
+    """Fix the random seed for reproducibility"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    torch.mps.manual_seed(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
 
-# create a custom Dataset Class to be used for the dataloader
 class LlamaDataset(Dataset):
-    def __init__(self, dataset, args, eos=False):
+    """Class to load the dataset"""
+
+    def __init__(self, dataset, args, eos: bool = False):
         self.dataset = dataset
         self.p = args
         self.tokenizer = Tokenizer(max_len=args.max_sentence_len)
@@ -116,7 +123,7 @@ def model_eval(dataloader, model, device):
     y_true = []
     y_pred = []
     sents = []
-    for step, batch in enumerate(tqdm(dataloader, desc=f"eval", disable=TQDM_DISABLE)):
+    for step, batch in enumerate(tqdm(dataloader, desc="eval", disable=TQDM_DISABLE)):
         b_ids, b_labels, b_sents = batch["token_ids"], batch["labels"], batch["sents"]
 
         b_ids = b_ids.to(device)
@@ -152,7 +159,17 @@ def save_model(model, optimizer, args, config, filepath):
 
 
 def train(args):
-    device = torch.device("cuda") if args.use_gpu else torch.device("cpu")
+    if args.use_gpu:
+        if torch.cuda.is_available():
+            print("Using CUDA GPU")
+            device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            print("Using Metal GPU")
+            device = torch.device("mps")
+        else:
+            print("GPU is not available. Using CPU")
+            device = torch.device("cpu")
+
     #### Load data
     # create the data and its corresponding datasets and dataloader
     tokenizer = Tokenizer(args.max_sentence_len)
@@ -203,7 +220,7 @@ def train(args):
         for step, batch in enumerate(
             tqdm(train_dataloader, desc=f"train-{epoch}", disable=TQDM_DISABLE)
         ):
-            b_ids, b_labels, b_sents = (
+            b_ids, b_labels, _ = (
                 batch["token_ids"],
                 batch["labels"],
                 batch["sents"],
@@ -226,8 +243,8 @@ def train(args):
 
         train_loss = train_loss / (num_batches)
 
-        train_acc, train_f1, *_ = model_eval(train_dataloader, model, device)
-        dev_acc, dev_f1, *_ = model_eval(dev_dataloader, model, device)
+        train_acc, _, *_ = model_eval(train_dataloader, model, device)
+        dev_acc, _, *_ = model_eval(dev_dataloader, model, device)
 
         if dev_acc > best_dev_acc:
             best_dev_acc = dev_acc
@@ -335,10 +352,8 @@ def test_with_prompting(args):
             collate_fn=test_dataset.collate_fn,
         )
 
-        dev_acc, dev_f1, dev_pred, dev_true, dev_sents = model_eval(
-            dev_dataloader, model, device
-        )
-        test_acc, test_f1, test_pred, test_true, test_sents = model_eval(
+        dev_acc, _, dev_pred, _, dev_sents = model_eval(dev_dataloader, model, device)
+        test_acc, _, test_pred, _, test_sents = model_eval(
             test_dataloader, model, device
         )
 
@@ -382,10 +397,8 @@ def test(args):
             collate_fn=test_dataset.collate_fn,
         )
 
-        dev_acc, dev_f1, dev_pred, dev_true, dev_sents = model_eval(
-            dev_dataloader, model, device
-        )
-        test_acc, test_f1, test_pred, test_true, test_sents = model_eval(
+        dev_acc, _, dev_pred, _, dev_sents = model_eval(dev_dataloader, model, device)
+        test_acc, _, test_pred, _, test_sents = model_eval(
             test_dataloader, model, device
         )
 
@@ -403,7 +416,9 @@ def get_args():
     parser.add_argument(
         "--label-names", type=str, default="data/cfimdb-label-mapping.json"
     )
-    parser.add_argument("--pretrained-model-path", type=str, default="stories42M.pt")
+    parser.add_argument(
+        "--pretrained-model-path", type=str, default="models/stories42M.pt"
+    )
     parser.add_argument("--max_sentence_len", type=int, default=None)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--epochs", type=int, default=5)
@@ -418,18 +433,18 @@ def get_args():
     parser.add_argument(
         "--generated_sentence_low_temp_out",
         type=str,
-        default="generated-sentence-temp-0.txt",
+        default="output/generated-sentence-temp-0.txt",
     )
     parser.add_argument(
         "--generated_sentence_high_temp_out",
         type=str,
-        default="generated-sentence-temp-1.txt",
+        default="output/generated-sentence-temp-1.txt",
     )
     parser.add_argument(
-        "--dev_out", type=str, default="cfimdb-dev-prompting-output.txt"
+        "--dev_out", type=str, default="output/cfimdb-dev-prompting-output.txt"
     )
     parser.add_argument(
-        "--test_out", type=str, default="cfimdb-test-prompting-output.txt"
+        "--test_out", type=str, default="output/cfimdb-test-prompting-output.txt"
     )
 
     # hyper parameters
