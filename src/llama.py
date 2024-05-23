@@ -1,12 +1,13 @@
+import math
 from contextlib import nullcontext
 from typing import Optional, Tuple
-import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from base_llama import LlamaPreTrainedModel, LlamaConfig
-from rope import apply_rotary_emb
+from .base_llama import LlamaConfig, LlamaPreTrainedModel
+from .rope import apply_rotary_emb
 
 
 class RMSNorm(torch.nn.Module):
@@ -125,7 +126,7 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         """
         Jointly compute Scaled Dot Product Attention (see Section 3.2.1 in
-        https://arxiv.org/abs/1706.03762 for details).
+        https://arxiv.org/abs/1706.03762 for details). Or see torch.nn.functional.scaled_dot_product_attention.
         An optimal implemention will jointly computing attention for multiple
         heads (n_local_heads of them) at once using matrix/tensor operations.
 
@@ -137,9 +138,26 @@ class Attention(nn.Module):
         Returns:
             torch.Tensor: Output tensor after applying Scaled Dot Product Attention. softmax(QK^T)V, shape (bs, n_local_heads, seqlen, head_dim).
         """
-        return F.scaled_dot_product_attention(
-            query, key, value, attn_mask=self.attn_dropout
-        )
+        # Compute the scaled dot product attention scores
+        # (Q @ K.T) / sqrt(d_k)
+        scores = torch.einsum("bnqd,bnkd->bnqk", query, key) / (self.head_dim**0.5)
+
+        # Apply the softmax function to the attention scores along the last dimension to normalize the scores so they sum to one
+        attention_probs = F.softmax(scores, dim=-1)
+
+        # Apply dropout to the attention probabilities
+        if self.dropout > 0.0:
+            attention_probs = self.attn_dropout(attention_probs)
+
+        # Get the weighted sum of the values based on their attention probabilities: attention_probs @ V
+        output = torch.einsum("bnqk,bnkd->bnqd", attention_probs, value)
+
+        # Apply residual dropout to the output tensor
+        if self.dropout > 0.0:
+            output = self.resid_dropout(output)
+
+        # Attention(Q, K, V) = softmax(QK^T / sqrt(d_k))V
+        return output  # (bs, n_local_heads, seqlen, head_dim)
 
     def forward(self, x: torch.Tensor):
         """
@@ -481,8 +499,8 @@ def load_pretrained(checkpoint: str) -> Llama:
         torch.backends.cuda.matmul.allow_tf32 = True  # Allow TensorFlow32 on matmul
         torch.backends.cudnn.allow_tf32 = True  # Allow TensorFlow32 on cuDNN
 
-    # Setup automatic mixed precision context if not on CPU
-    device_type = device if device in ["cuda", "mps"] else "cpu"
+    # Setup automatic mixed precision context if CUDA is available
+    device_type = device if device in ["cuda"] else "cpu"
     ptdtype = {
         "float32": torch.float32,
         "bfloat16": torch.bfloat16,
@@ -491,7 +509,7 @@ def load_pretrained(checkpoint: str) -> Llama:
 
     ctx = (
         nullcontext()
-        if device_type == "cpu"
+        if device_type != "cuda"
         else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
     )
 
