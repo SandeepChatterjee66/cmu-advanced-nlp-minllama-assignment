@@ -11,11 +11,6 @@ from .rope import apply_rotary_emb
 
 
 class RMSNorm(torch.nn.Module):
-    """Root Mean Square Layer Normalization Layer (https://arxiv.org/abs/1910.07467)
-
-    borrowed from the official Llama implementation https://github.com/facebookresearch/llama/blob/main/llama/model.py
-    """
-
     def __init__(self, dim: int, eps: float = 1e-6):
         """
         Initialize the RMSNorm normalization layer.
@@ -33,7 +28,7 @@ class RMSNorm(torch.nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
-    def _norm(self, x: torch.Tensor):
+    def _norm(self, x):
         """
         Compute the root mean square normalization. Use Equation 4 under
         Section 4 of https://arxiv.org/abs/1910.07467 as a reference. Add
@@ -46,8 +41,8 @@ class RMSNorm(torch.nn.Module):
         Returns:
             torch.Tensor: The normalized tensor.
         """
-        rms = torch.sqrt(torch.mean(x**2, dim=-1, keepdim=True) + self.eps)
-        return torch.div(x, rms)
+        # todo
+        raise NotImplementedError
 
     def forward(self, x):
         """
@@ -65,37 +60,13 @@ class RMSNorm(torch.nn.Module):
 
 
 class Attention(nn.Module):
-    """Attention mechanism for Llama model."""
-
     def __init__(self, config: LlamaConfig):
-        """_summary_
-
-        Args:
-            config (LlamaConfig): Configuration class for Llama model.
-
-        Attributes:
-            n_kv_heads (int): Number of heads for key and value tensors.
-            n_local_heads (int): Number of local heads.
-            n_local_kv_heads (int): Number of local heads for key and value tensors.
-            n_rep (int): Number of repetitions.
-            head_dim (int): Dimension of each head.
-            max_seq_len (int): Maximum sequence length.
-            compute_query (nn.Linear): Linear layer for computing query tensor.
-            compute_key (nn.Linear): Linear layer for computing key tensor.
-            compute_value (nn.Linear): Linear layer for computing value tensor.
-            compute_output (nn.Linear): Linear layer for computing output tensor.
-            attn_dropout (nn.Dropout): Dropout layer for attention.
-            resid_dropout (nn.Dropout): Dropout layer for residual connection.
-            dropout (float): Dropout rate.
-        """
         super().__init__()
         self.n_kv_heads = (
             config.n_heads if config.n_kv_heads is None else config.n_kv_heads
         )
         assert config.n_heads % self.n_kv_heads == 0
-
         model_parallel_size = 1
-
         self.n_local_heads = config.n_heads // model_parallel_size
         self.n_local_kv_heads = self.n_kv_heads // model_parallel_size
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
@@ -204,27 +175,11 @@ class Attention(nn.Module):
 
 class FeedForward(nn.Module):
     def __init__(self, dim: int, hidden_dim: int, multiple_of: int, dropout: float):
-        """Feed forward network with SwiGLU activation function.
-
-        Args:
-            dim (int): Dimension of the input tensor.
-            hidden_dim (int): Dimension of the hidden layer.
-            multiple_of (int): Multiple of the hidden dimension.
-            dropout (float): Dropout rate.
-
-        Attributes:
-            w1 (nn.Linear): Linear layer for the first hidden layer.
-            w2 (nn.Linear): Linear layer for the second hidden layer.
-            w3 (nn.Linear): Linear layer for the third hidden layer.
-            dropout (nn.Dropout): Dropout layer.
-        """
         super().__init__()
-
         if hidden_dim is None:
             hidden_dim = 4 * dim
             hidden_dim = int(2 * hidden_dim / 3)
             hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
-
         self.w1 = nn.Linear(dim, hidden_dim, bias=False)
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
@@ -243,32 +198,11 @@ class FeedForward(nn.Module):
 
 
 class LlamaLayer(nn.Module):
-    """Basic transformer building block."""
-
     def __init__(self, layer_id: int, config: LlamaConfig):
-        """
-        Initialize a LlamaLayer, which is a basic transformer building block.
-
-        Args:
-            layer_id (int): Layer ID.
-            config (LlamaConfig): Configuration class for Llama model.
-
-        Attributes:
-            n_heads (int): Number of heads.
-            dim (int): Dimension of the input tensor.
-            head_dim (int): Dimension of each head.
-            layer_id (int): Layer ID.
-            attention (Attention): Attention module.
-            feed_forward (FeedForward): Feed forward module.
-            attention_norm (RMSNorm): Layer normalization for attention.
-            ffn_norm (RMSNorm): Layer normalization for feed forward.
-        """
         super().__init__()
         self.n_heads = config.n_heads
         self.dim = config.dim
         self.head_dim = config.dim // config.n_heads
-        self.layer_id = layer_id
-
         self.attention = Attention(config)
         self.feed_forward = FeedForward(
             dim=config.dim,
@@ -276,6 +210,7 @@ class LlamaLayer(nn.Module):
             multiple_of=config.multiple_of,
             dropout=config.dropout,
         )
+        self.layer_id = layer_id
         self.attention_norm = RMSNorm(config.dim, eps=config.layer_norm_eps)
         self.ffn_norm = RMSNorm(config.dim, eps=config.layer_norm_eps)
 
@@ -288,7 +223,7 @@ class LlamaLayer(nn.Module):
         The transformer block should consist of:
         1) layer normalization of the input (via Root Mean Square layer normalization)
         2) self-attention on the layer-normalized input
-        3) a residual connection from the unnormalized input to the output of the self-attention
+        3) a residual connection (i.e., add the input to the output of the self-attention)
         3) layer normalization on the output of the self-attention
         4) a feed-forward network on the layer-normalized output of the self-attention
         5) add a residual connection from the unnormalized self-attention output to the output of the feed-forward network
@@ -316,8 +251,6 @@ class LlamaLayer(nn.Module):
 
 
 class Llama(LlamaPreTrainedModel):
-    """Llama model class."""
-
     def __init__(self, config: LlamaConfig):
         """Initialize the Llama model using the given configuration.
 
@@ -340,21 +273,12 @@ class Llama(LlamaPreTrainedModel):
         self.vocab_size = config.vocab_size
         self.n_layers = config.n_layers
 
-        # Embedding layer for converting token IDs to vectors.
         self.tok_embeddings = nn.Embedding(config.vocab_size, config.dim)
-
-        # Dropout layer applied to embeddings and sub-layers.
         self.dropout = nn.Dropout(config.dropout)
-
-        # Stack of transformer layers defined in LlamaLayer class.
-        self.layers = nn.ModuleList(
-            [LlamaLayer(layer_id, config) for layer_id in range(config.n_layers)]
-        )
-
-        # Normalization layer applied to the final output of the transformer stack.
+        self.layers = torch.nn.ModuleList()
+        for layer_id in range(config.n_layers):
+            self.layers.append(LlamaLayer(layer_id, config))
         self.norm = RMSNorm(config.dim, eps=config.layer_norm_eps)
-
-        # Output layer that maps the final output vectors to a vocabulary-sized space.
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
         # share the unembedding parameters with the embedding parameters
@@ -366,21 +290,18 @@ class Llama(LlamaPreTrainedModel):
 
         # init all weights
         self.apply(self._init_weights)
-
         # apply special scaled init to the residual projections, per GPT-2 paper
-        # adjusting the scale for better training stability.
         for pn, p in self.named_parameters():
             if pn.endswith("w3.weight") or pn.endswith("compute_output.weight"):
                 nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layers))
 
-    def _init_weights(self, module: nn.Module):
-        """Initialize the weights for Linear and Embedding layers."""
+    def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
-                nn.init.zeros_(module.bias)
+                torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(
         self, tokens: torch.Tensor, targets: Optional[torch.Tensor] = None
@@ -404,17 +325,11 @@ class Llama(LlamaPreTrainedModel):
         # Pass through each transformer layer.
         for layer in self.layers:
             h = layer(h)
-
-        # Apply normalization to the output of the last layer.
         h = self.norm(h)
 
-        # Compute logits. During training, compute over all positions;
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.output(h)
-
-        # During inference, only forward the output on the very last position
-        # (i.e. the last token in the sequence) for mini-optimization
         else:
             logits = self.output(
                 h[:, [-1], :]
@@ -423,25 +338,15 @@ class Llama(LlamaPreTrainedModel):
         return logits, h
 
     @torch.inference_mode()
-    def generate(
-        self, idx: torch.Tensor, max_new_tokens: int, temperature: float = 1.0
-    ) -> torch.Tensor:
+    def generate(self, idx, max_new_tokens, temperature=1.0):
         """
-        Generate new tokens given an initial sequence of token indices using temperature sampling.
-
-        Args:
-            idx (torch.Tensor): A tensor of token indices with shape (batch_size, sequence_length).
-            max_new_tokens (int): Maximum number of new tokens to generate.
-            temperature (float, optional):
-                Sampling temperature; values greater than 1.0 increase diversity, values less than 1.0 increase confidence. Default is 1.0.
-
-        Returns:
-            torch.Tensor: The tensor containing the original and the newly generated tokens.
-
-        Note:
-            - This function uses temperature sampling which modifies the likelihood of the predictions. We are not using nucleus sampling (i.e. limiting ourselves to sampling from the top-k most probable tokens at each timestep), though this is often used in conjunction with temperature sampling.
-            - It is advised to use the model in the model.eval() mode during generation to disable dropout effects.
-            - This implementation does NOT use caching mechanisms for keys/values which can affect efficiency.
+        Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
+        the sequence max_new_tokens times, feeding the predictions back into the model each time.
+        We perform this generation using basic temperature sampling. Note that we are not using
+        nucleus sampling (i.e. limiting ourselves to sampling from the top-k most probable tokens
+        at each timestep), though this is often used in conjunction with temperature sampling,
+        Most likely you'll want to make sure to be in model.eval() mode of operation for this.
+        Also note this is a super inefficient version of sampling with no key/value cache.
         """
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size

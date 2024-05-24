@@ -43,21 +43,15 @@ class LlamaZeroShotClassifier(torch.nn.Module):
             tokenizer.encode(label, bos=False, eos=False) for label in label_names
         ]
 
-    def forward(self, input_ids):
-        # compute the completion probability of each label string
-        logits, _ = self.llama(input_ids)
-        log_probabilities = F.log_softmax(logits, dim=-1)
-        label_probabilities = torch.zeros(
-            (log_probabilities.shape[0], self.num_labels),
-            device=log_probabilities.device,
-        )
-        for i, label_token_ids in enumerate(self.label_name_ids):
-            total_log_prob = torch.sum(
-                log_probabilities[:, :, label_token_ids], axis=-1
-            )
-            label_probabilities[:, i] = total_log_prob[:, 0]
-        return label_probabilities
-
+	def forward(self, input_ids):
+		# compute the completion probability of each label string
+		logits, _ = self.llama(input_ids)
+		log_probabilities = F.log_softmax(logits, dim=-1)
+		label_probabilities = torch.zeros((log_probabilities.shape[0], self.num_labels), device=log_probabilities.device)
+		for i, label_token_ids in enumerate(self.label_name_ids):
+			total_log_prob = torch.sum(log_probabilities[:, :, label_token_ids], axis=-1)
+			label_probabilities[:, i] = total_log_prob[:, 0]
+		return label_probabilities
 
 class LlamaEmbeddingClassifier(torch.nn.Module):
     def __init__(self, config: LlamaConfig):
@@ -83,8 +77,8 @@ class LlamaEmbeddingClassifier(torch.nn.Module):
             elif config.option == "finetune":
                 param.requires_grad = True
 
-        self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
-        self.classifier_head = torch.nn.Linear(self.llama.config.dim, self.num_labels)
+		self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
+		self.classifier_head = torch.nn.Linear(self.llama.config.dim, self.num_labels)
 
     def forward(self, input_ids: torch.Tensor):
         """

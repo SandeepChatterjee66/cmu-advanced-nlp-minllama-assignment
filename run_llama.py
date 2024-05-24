@@ -54,8 +54,8 @@ class LlamaDataset(Dataset):
         self.tokenizer = Tokenizer(max_len=args.max_sentence_len)
         self.eos = eos
 
-    def __len__(self):
-        return len(self.dataset)
+	def __len__(self):
+		return len(self.dataset)
 
     def __getitem__(self, idx: int):
         ele = self.dataset[idx]
@@ -73,19 +73,19 @@ class LlamaDataset(Dataset):
         token_ids = torch.LongTensor(encoding_padded)
         labels = torch.LongTensor(labels)
 
-        return token_ids, labels, sents
+		return token_ids, labels, sents
 
     def collate_fn(self, all_data: List[dict]) -> Dict[str, torch.Tensor]:
         """Process the data to create the batched data"""
 
-        token_ids, labels, sents = self.pad_data(all_data)
-        batched_data = {
-            "token_ids": token_ids,
-            "labels": labels,
-            "sents": sents,
-        }
+		token_ids, labels, sents = self.pad_data(all_data)
+		batched_data = {
+				'token_ids': token_ids,
+				'labels': labels,
+				'sents': sents,
+			}
 
-        return batched_data
+		return batched_data
 
 
 def create_data(
@@ -134,7 +134,6 @@ def create_data(
     else:
         return data
 
-
 # perform model evaluation in terms of the accuracy and f1 score.
 def model_eval(dataloader: DataLoader, model: torch.nn.Module, device: torch.device):
     """Evaluate the model using the specified dataloader and model.
@@ -158,21 +157,21 @@ def model_eval(dataloader: DataLoader, model: torch.nn.Module, device: torch.dev
     for step, batch in enumerate(tqdm(dataloader, desc="eval", disable=TQDM_DISABLE)):
         b_ids, b_labels, b_sents = batch["token_ids"], batch["labels"], batch["sents"]
 
-        b_ids = b_ids.to(device)
+		b_ids = b_ids.to(device)
 
-        logits = model(b_ids)
-        logits = logits.detach().cpu().numpy()
-        preds = np.argmax(logits, axis=1).flatten()
+		logits = model(b_ids)
+		logits = logits.detach().cpu().numpy()
+		preds = np.argmax(logits, axis=1).flatten()
 
-        b_labels = b_labels.flatten()
-        y_true.extend(b_labels)
-        y_pred.extend(preds)
-        sents.extend(b_sents)
+		b_labels = b_labels.flatten()
+		y_true.extend(b_labels)
+		y_pred.extend(preds)
+		sents.extend(b_sents)
 
-    f1 = f1_score(y_true, y_pred, average="macro")
-    acc = accuracy_score(y_true, y_pred)
+	f1 = f1_score(y_true, y_pred, average='macro')
+	acc = accuracy_score(y_true, y_pred)
 
-    return acc, f1, y_pred, y_true, sents
+	return acc, f1, y_pred, y_true, sents
 
 
 def save_model(
@@ -194,8 +193,8 @@ def save_model(
         "torch_rng": torch.random.get_rng_state(),
     }
 
-    torch.save(save_info, filepath)
-    print(f"save the model to {filepath}")
+	torch.save(save_info, filepath)
+	print(f"save the model to {filepath}")
 
 
 def train(args: argparse.Namespace):
@@ -209,41 +208,31 @@ def train(args: argparse.Namespace):
     train_data, num_labels = create_data(args.train, tokenizer, "train")
     dev_data = create_data(args.dev, tokenizer, "valid")
 
-    train_dataset = LlamaDataset(train_data, args)
-    dev_dataset = LlamaDataset(dev_data, args)
+	train_dataset = LlamaDataset(train_data, args)
+	dev_dataset = LlamaDataset(dev_data, args)
 
-    train_dataloader = DataLoader(
-        train_dataset,
-        shuffle=True,
-        batch_size=args.batch_size,
-        collate_fn=train_dataset.collate_fn,
-    )
-    dev_dataloader = DataLoader(
-        dev_dataset,
-        shuffle=False,
-        batch_size=args.batch_size,
-        collate_fn=dev_dataset.collate_fn,
-    )
+	train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=args.batch_size,
+								  collate_fn=train_dataset.collate_fn)
+	dev_dataloader = DataLoader(dev_dataset, shuffle=False, batch_size=args.batch_size,
+								collate_fn=dev_dataset.collate_fn)
 
-    #### Init model
-    config = {
-        "hidden_dropout_prob": args.hidden_dropout_prob,
-        "pretrained_model_path": args.pretrained_model_path,
-        "num_labels": num_labels,
-        "data_dir": ".",
-        "option": args.option,
-    }
+	#### Init model
+	config = {'hidden_dropout_prob': args.hidden_dropout_prob,
+			  'pretrained_model_path': args.pretrained_model_path,
+			  'num_labels': num_labels,
+			  'data_dir': '.',
+			  'option': args.option}
 
-    config = SimpleNamespace(**config)
+	config = SimpleNamespace(**config)
 
-    # initialize the Senetence Classification Model
-    model = LlamaEmbeddingClassifier(config)
-    model = model.to(device)
+	# initialize the Senetence Classification Model
+	model = LlamaEmbeddingClassifier(config)
+	model = model.to(device)
 
-    lr = args.lr
-    ## specify the optimizer
-    optimizer = AdamW(model.parameters(), lr=lr)
-    best_dev_acc = 0
+	lr = args.lr
+	## specify the optimizer
+	optimizer = AdamW(model.parameters(), lr=lr)
+	best_dev_acc = 0
 
     ## run for the specified number of epochs
     for epoch in tqdm(range(args.epochs)):
@@ -259,33 +248,29 @@ def train(args: argparse.Namespace):
                 batch["sents"],
             )
 
-            b_ids = b_ids.to(device)
-            b_labels = b_labels.to(device)
+			b_ids = b_ids.to(device)
+			b_labels = b_labels.to(device)
 
-            optimizer.zero_grad()
-            logits = model(b_ids)
-            loss = (
-                F.nll_loss(logits, b_labels.view(-1), reduction="sum") / args.batch_size
-            )
+			optimizer.zero_grad()
+			logits = model(b_ids)
+			loss = F.nll_loss(logits, b_labels.view(-1), reduction='sum') / args.batch_size
 
-            loss.backward()
-            optimizer.step()
+			loss.backward()
+			optimizer.step()
 
-            train_loss += loss.item()
-            num_batches += 1
+			train_loss += loss.item()
+			num_batches += 1
 
-        train_loss = train_loss / (num_batches)
+		train_loss = train_loss / (num_batches)
 
         train_acc, _, *_ = model_eval(train_dataloader, model, device)
         dev_acc, _, *_ = model_eval(dev_dataloader, model, device)
 
-        if dev_acc > best_dev_acc:
-            best_dev_acc = dev_acc
-            save_model(model, optimizer, args, config, args.filepath)
+		if dev_acc > best_dev_acc:
+			best_dev_acc = dev_acc
+			save_model(model, optimizer, args, config, args.filepath)
 
-        print(
-            f"epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}"
-        )
+		print(f"epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
 
 
 def generate_sentence(
@@ -316,21 +301,21 @@ def generate_sentence(
         print(f"load model from {args.pretrained_model_path}")
         enc = Tokenizer(args.max_sentence_len)
 
-        start_ids = enc.encode(prefix, bos=True, eos=False)
-        x = torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...]
+		start_ids = enc.encode(prefix, bos=True, eos=False)
+		x = (torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...])
 
-        # run generation
-        with torch.no_grad():
-            with ctx:
-                y = llama.generate(x, max_new_tokens, temperature=temperature)
-                sentence = enc.decode(y[0].tolist())
-                print(f"Temperature is {temperature}")
-                print(sentence)
-                print("---------------")
-                writer = open(outfile, "w")
-                writer.write(sentence)
-                print(f"Wrote generated sentence to {outfile}.")
-                writer.close()
+		# run generation
+		with torch.no_grad():
+			with ctx:
+				y = llama.generate(x, max_new_tokens, temperature=temperature)
+				sentence = enc.decode(y[0].tolist())
+				print(f"Temperature is {temperature}")
+				print(sentence)
+				print('---------------')
+				writer = open(outfile, 'w')
+				writer.write(sentence)
+				print(f"Wrote generated sentence to {outfile}.")
+				writer.close()
 
 
 def write_predictions_to_file(
@@ -354,7 +339,7 @@ def test_with_prompting(args: argparse.Namespace):
         "test-prompting-output.txt"
     ), 'For saving prompting results, please set the test_out argument as "<dataset>-test-prompting-output.txt"'
 
-    with torch.no_grad():
+	with torch.no_grad():
 
         device = get_device(args)
         #### Load data
@@ -363,57 +348,38 @@ def test_with_prompting(args: argparse.Namespace):
         label_names = json.load(open(args.label_names, "r"))
         _, num_labels = create_data(args.train, tokenizer, "train")
 
-        #### Init model
-        config = {
-            "pretrained_model_path": args.pretrained_model_path,
-            "label_names": label_names,
-            "num_labels": num_labels,
-            "data_dir": ".",
-            "option": args.option,
-        }
+		#### Init model
+		config = {'pretrained_model_path': args.pretrained_model_path,
+				'label_names': label_names,
+				'num_labels': num_labels,
+				'data_dir': '.',
+				'option': args.option}
 
-        config = SimpleNamespace(**config)
+		config = SimpleNamespace(**config)
 
-        if len(label_names) == 2:
-            label_name_str = " or ".join(label_names)
-        else:
-            label_name_str = ", ".join(label_names[:-1]) + ", or " + label_names[-1]
-        prompt_suffix = f"Is this movie {label_name_str}? This movie is "
-        model = LlamaZeroShotClassifier(config, tokenizer, label_names)
-        model = model.to(device)
+		if len(label_names) == 2:
+			label_name_str = " or ".join(label_names)
+		else:
+			label_name_str = ", ".join(label_names[:-1]) + ", or " + label_names[-1]
+		prompt_suffix=f"Is this movie {label_name_str}? This movie is "
+		model = LlamaZeroShotClassifier(config, tokenizer, label_names)
+		model = model.to(device)
 
-        dev_data = create_data(
-            args.dev, tokenizer, "valid", eos=False, prompt_suffix=prompt_suffix
-        )
-        dev_dataset = LlamaDataset(dev_data, args, eos=False)
-        dev_dataloader = DataLoader(
-            dev_dataset,
-            shuffle=False,
-            batch_size=args.batch_size,
-            collate_fn=dev_dataset.collate_fn,
-        )
+		dev_data = create_data(args.dev, tokenizer, 'valid', eos=False, prompt_suffix=prompt_suffix)
+		dev_dataset = LlamaDataset(dev_data, args, eos=False)
+		dev_dataloader = DataLoader(dev_dataset, shuffle=False, batch_size=args.batch_size, collate_fn=dev_dataset.collate_fn)
 
-        test_data = create_data(
-            args.test, tokenizer, "test", eos=False, prompt_suffix=prompt_suffix
-        )
-        test_dataset = LlamaDataset(test_data, args, eos=False)
-        test_dataloader = DataLoader(
-            test_dataset,
-            shuffle=False,
-            batch_size=args.batch_size,
-            collate_fn=test_dataset.collate_fn,
-        )
+		test_data = create_data(args.test, tokenizer, 'test', eos=False, prompt_suffix=prompt_suffix)
+		test_dataset = LlamaDataset(test_data, args, eos=False)
+		test_dataloader = DataLoader(test_dataset, shuffle=False, batch_size=args.batch_size, collate_fn=test_dataset.collate_fn)
 
         dev_acc, _, dev_pred, _, dev_sents = model_eval(dev_dataloader, model, device)
         test_acc, _, test_pred, _, test_sents = model_eval(
             test_dataloader, model, device
         )
 
-        write_predictions_to_file("dev", args.dev_out, dev_acc, dev_pred, dev_sents)
-        write_predictions_to_file(
-            "test", args.test_out, test_acc, test_pred, test_sents
-        )
-
+		write_predictions_to_file("dev", args.dev_out, dev_acc, dev_pred, dev_sents)
+		write_predictions_to_file("test", args.test_out, test_acc, test_pred, test_sents)
 
 def test(args: argparse.Namespace):
     """Test the model using the specified arguments."""
@@ -447,14 +413,9 @@ def test(args: argparse.Namespace):
             collate_fn=dev_dataset.collate_fn,
         )
 
-        test_data = create_data(args.test, tokenizer, "test")
-        test_dataset = LlamaDataset(test_data, args)
-        test_dataloader = DataLoader(
-            test_dataset,
-            shuffle=False,
-            batch_size=args.batch_size,
-            collate_fn=test_dataset.collate_fn,
-        )
+		test_data = create_data(args.test, tokenizer, 'test')
+		test_dataset = LlamaDataset(test_data, args)
+		test_dataloader = DataLoader(test_dataset, shuffle=False, batch_size=args.batch_size, collate_fn=test_dataset.collate_fn)
 
         # evaluate the model on the dev and test sets
         dev_acc, _, dev_pred, _, dev_sents = model_eval(dev_dataloader, model, device)
@@ -509,27 +470,17 @@ def get_args():
         "--test_out", type=str, default="output/cfimdb-test-prompting-output.txt"
     )
 
-    # hyper parameters
-    parser.add_argument(
-        "--batch_size",
-        help="sst: 64, cfimdb: 8 can fit a 12GB GPU",
-        type=int,
-        default=8,
-    )
-    parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
-    parser.add_argument(
-        "--lr",
-        type=float,
-        help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
-        default=2e-5,
-    )
+	# hyper parameters
+	parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
+	parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
+	parser.add_argument("--lr", type=float, help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
+						default=2e-5)
 
     args = parser.parse_args()
     print("Running with the following arguments:")
     pprint(vars(args))
     print("=====================================")
     return args
-
 
 if __name__ == "__main__":
     args = get_args()
@@ -539,35 +490,23 @@ if __name__ == "__main__":
     )
     seed_everything(args.seed)  # fix the seed for reproducibility
 
-    if args.option == "generate":
-        # Step 1
-        # Complete this sentence to test your implementation!
-        prefix = "I have wanted to see this thriller for a while, and it didn't disappoint. Keanu Reeves, playing the hero John Wick, is"
-        generate_sentence(
-            args,
-            prefix,
-            args.generated_sentence_low_temp_out,
-            max_new_tokens=75,
-            temperature=0.0,
-        )
-        generate_sentence(
-            args,
-            prefix,
-            args.generated_sentence_high_temp_out,
-            max_new_tokens=75,
-            temperature=1.0,
-        )
-    elif args.option == "prompt":
-        # Step 2
-        # Solve this task with prompted language modeling
-        test_with_prompting(args)
-    elif args.option == "finetune":
-        # Step 3
-        # Finetune a classification model
-        train(args)
+	if args.option == "generate":
+		# Step 1
+		# Complete this sentence to test your implementation!
+		prefix = "I have wanted to see this thriller for a while, and it didn't disappoint. Keanu Reeves, playing the hero John Wick, is"
+		generate_sentence(args, prefix, args.generated_sentence_low_temp_out, max_new_tokens=75, temperature=0.0)
+		generate_sentence(args, prefix, args.generated_sentence_high_temp_out, max_new_tokens=75, temperature=1.0)
+	elif args.option == "prompt":
+		# Step 2
+		# Solve this task with prompted language modeling
+		test_with_prompting(args)
+	elif args.option == "finetune":
+		# Step 3
+		# Finetune a classification model
+		train(args)
 
-        # Step 4
-        # Evaluate your model on the dev and test sets
-        test(args)
-    else:
-        raise ValueError(f"Invalid option: {args.option}")
+		# Step 4
+		# Evaluate your model on the dev and test sets
+		test(args)
+	else:
+		raise ValueError(f"Invalid option: {args.option}")
