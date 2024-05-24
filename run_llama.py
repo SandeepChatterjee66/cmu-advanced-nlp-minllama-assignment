@@ -179,7 +179,7 @@ def save_model(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     args: argparse.Namespace,
-    config: LlamaConfig,
+    config: LlamaConfig | SimpleNamespace | dict,
     filepath: str,
 ):
     """Save the model to the specified file path."""
