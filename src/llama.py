@@ -1,17 +1,15 @@
+import math
 from contextlib import nullcontext
 from typing import Optional, Tuple
-import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from base_llama import LlamaPreTrainedModel, LlamaConfig
-from rope import apply_rotary_emb
-from utils import *
+from .base_llama import LlamaConfig, LlamaPreTrainedModel
+from .rope import apply_rotary_emb
 
-# Root Mean Square Layer Normalization (https://arxiv.org/abs/1910.07467)
-# borrowed from the official Llama implementation:
-# https://github.com/facebookresearch/llama/blob/main/llama/model.py
+
 class RMSNorm(torch.nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         """
@@ -33,7 +31,7 @@ class RMSNorm(torch.nn.Module):
     def _norm(self, x):
         """
         Compute the root mean square normalization. Use Equation 4 under
-        Section 4 of https://arxiv.org/abs/1910.07467 as a reference. Add 
+        Section 4 of https://arxiv.org/abs/1910.07467 as a reference. Add
         the given epsilon value (self.eps) to the tensor's norm (i.e. inside
         the square root in Equation 4) before normalizing the tensor.
 
@@ -60,10 +58,13 @@ class RMSNorm(torch.nn.Module):
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
 
+
 class Attention(nn.Module):
     def __init__(self, config: LlamaConfig):
         super().__init__()
-        self.n_kv_heads = config.n_heads if config.n_kv_heads is None else config.n_kv_heads
+        self.n_kv_heads = (
+            config.n_heads if config.n_kv_heads is None else config.n_kv_heads
+        )
         assert config.n_heads % self.n_kv_heads == 0
         model_parallel_size = 1
         self.n_local_heads = config.n_heads // model_parallel_size
@@ -71,44 +72,75 @@ class Attention(nn.Module):
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
         self.head_dim = config.dim // config.n_heads
         self.max_seq_len = config.max_seq_len
-        self.compute_query = nn.Linear(config.dim, config.n_heads * self.head_dim, bias=False)
-        self.compute_key = nn.Linear(config.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.compute_value = nn.Linear(config.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.compute_output = nn.Linear(config.n_heads * self.head_dim, config.dim, bias=False)
+
+        # linear layers for computing query, key, value, and output tensors
+        self.compute_query = nn.Linear(
+            config.dim, config.n_heads * self.head_dim, bias=False
+        )
+        self.compute_key = nn.Linear(
+            config.dim, self.n_kv_heads * self.head_dim, bias=False
+        )
+        self.compute_value = nn.Linear(
+            config.dim, self.n_kv_heads * self.head_dim, bias=False
+        )
+        self.compute_output = nn.Linear(
+            config.n_heads * self.head_dim, config.dim, bias=False
+        )
+
+        # dropout layers for attention and residual connection
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
         self.dropout = config.dropout
 
-    def compute_query_key_value_scores(self,
-                                       query: torch.Tensor,
-                                       key: torch.Tensor,
-                                       value: torch.Tensor) -> torch.Tensor:
-        '''
+    def compute_query_key_value_scores(
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor:
+        """
         Jointly compute Scaled Dot Product Attention (see Section 3.2.1 in
-        https://arxiv.org/abs/1706.03762 for details). The query, key, and
-        value tensors each have shape (bs, n_local_heads, seqlen, head_dim).
+        https://arxiv.org/abs/1706.03762 for details). Or see torch.nn.functional.scaled_dot_product_attention.
         An optimal implemention will jointly computing attention for multiple
         heads (n_local_heads of them) at once using matrix/tensor operations.
 
-        Make sure to use attention_dropout (self.attn_dropout) on the computed
-        attention matrix before applying it to the value tensor.
-        '''
-        # todo
-        raise NotImplementedError
+        Args:
+            query (torch.Tensor): Query tensor with shape (bs, n_local_heads, seqlen, head_dim).
+            key (torch.Tensor): Key tensor with shape (bs, n_local_kv_heads, seqlen, head_dim).
+            value (torch.Tensor): Value tensor with shape (bs, n_local_kv_heads, seqlen, head_dim).
 
-    def forward(
-        self,
-        x: torch.Tensor
-    ):
-        '''
+        Returns:
+            torch.Tensor: Output tensor after applying Scaled Dot Product Attention. softmax(QK^T)V, shape (bs, n_local_heads, seqlen, head_dim).
+        """
+        # Compute the scaled dot product attention scores
+        # (Q @ K.T) / sqrt(d_k)
+        scores = torch.einsum("bnqd,bnkd->bnqk", query, key) / (self.head_dim**0.5)
+
+        # Apply the softmax function to the attention scores along the last dimension to normalize the scores so they sum to one
+        attention_probs = F.softmax(scores, dim=-1)
+
+        # Apply dropout to the attention probabilities
+        if self.dropout > 0.0:
+            attention_probs = self.attn_dropout(attention_probs)
+
+        # Get the weighted sum of the values based on their attention probabilities: attention_probs @ V
+        output = torch.einsum("bnqk,bnkd->bnqd", attention_probs, value)
+
+        # Apply residual dropout to the output tensor
+        if self.dropout > 0.0:
+            output = self.resid_dropout(output)
+
+        # Attention(Q, K, V) = softmax(QK^T / sqrt(d_k))V
+        return output  # (bs, n_local_heads, seqlen, head_dim)
+
+    def forward(self, x: torch.Tensor):
+        """
         Llama2 uses Grouped-Query Attention. The details of GQA are actually
         not critical to solving this assignment; you are simply asked to
         compute Scaled Dot Product Attention (see above for details). GQA is
-        a memory optimization to compute multi-head attention efficiently. See
+        a memory optimization to compute multi-head attention efficiently.
+        See
         Section 2.2 in https://arxiv.org/abs/2305.13245 or
         https://ai.plainenglish.io/understanding-llama2-kv-cache-grouped-query-attention-rotary-embedding-and-more-c17e5f49a6d7
         for details.
-        '''
+        """
         batch_size, seqlen, _ = x.shape
 
         query = self.compute_query(x)
@@ -154,10 +186,11 @@ class FeedForward(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def SwiGLU(self, x: torch.Tensor) -> torch.Tensor:
-        '''
+        """
         Compute the SwiGLU activation function (see Section 2 in
-        https://arxiv.org/abs/2204.02311
-        '''
+        https://arxiv.org/abs/2204.02311 for details).
+
+        """
         return F.silu(self.w1(x)) * self.w3(x)
 
     def forward(self, x):
@@ -181,9 +214,9 @@ class LlamaLayer(nn.Module):
         self.attention_norm = RMSNorm(config.dim, eps=config.layer_norm_eps)
         self.ffn_norm = RMSNorm(config.dim, eps=config.layer_norm_eps)
 
-    def forward(self, x):
-        '''
-        This is the forward pass of the basic transformer building block. This is a
+    def forward(self, x: torch.Tensor):
+        """
+        Forward pass of the basic transformer building block. This is a
         modernized version of the block shown on the left of Figure 1 on
         https://arxiv.org/pdf/1706.03762.pdf.
 
@@ -193,18 +226,48 @@ class LlamaLayer(nn.Module):
         3) a residual connection (i.e., add the input to the output of the self-attention)
         3) layer normalization on the output of the self-attention
         4) a feed-forward network on the layer-normalized output of the self-attention
-        5) add a residual connection from the unnormalized self-attention output to the
-           output of the feed-forward network
-        '''
-        # todo
-        raise NotImplementedError
+        5) add a residual connection from the unnormalized self-attention output to the output of the feed-forward network
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor.
+        """
+        # layer normalization of the input
+        x_norm = self.attention_norm(x)
+        # self-attention on the layer-normalized input
+        attn_output = self.attention(x_norm)
+        # residual connection
+        x = x + attn_output
+
+        # layer normalization on the output of the self-attention
+        x_norm = self.ffn_norm(x)
+        # feed-forward network on the layer-normalized output of the self-attention
+        ffn_output = self.feed_forward(x_norm)
+        # add a residual connection from the unnormalized self-attention output to the output of the feed-forward network
+        x = x + ffn_output
+        return x
+
 
 class Llama(LlamaPreTrainedModel):
     def __init__(self, config: LlamaConfig):
-        '''
-        You will probably never need to call this function, unless you decide
-        to pretrain a Llama model from scratch.
-        '''
+        """Initialize the Llama model using the given configuration.
+
+        Args:
+            config (LlamaConfig): Configuration class for Llama model.
+
+        Attributes:
+            params (LlamaConfig): Stores the configuration passed to the model.
+            vocab_size (int): Vocabulary size.
+            n_layers (int): Number of transformer layers.
+
+            tok_embeddings (nn.Embedding): Embedding layer for token inputs.
+            dropout (nn.Dropout): Dropout layer to prevent overfitting.
+            layers (nn.ModuleList): List of transformer layers (LlamaLayer).
+            norm (RMSNorm): Normalization layer applied at the end of the model.
+            output (nn.Linear): Linear layer that maps the final output vectors to a vocabulary-sized space.
+        """
         super().__init__(config)
         self.params = config
         self.vocab_size = config.vocab_size
@@ -219,7 +282,9 @@ class Llama(LlamaPreTrainedModel):
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
         # share the unembedding parameters with the embedding parameters
-        self.tok_embeddings.weight = self.output.weight # https://paperswithcode.com/method/weight-tying
+        # which can lead to more efficient learning and reduced model size
+        # https://paperswithcode.com/method/weight-tying
+        self.tok_embeddings.weight = self.output.weight
 
         # some useful precompute for the RoPE relative positional embeddings
 
@@ -227,8 +292,8 @@ class Llama(LlamaPreTrainedModel):
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
-            if pn.endswith('w3.weight') or pn.endswith('compute_output.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layers))
+            if pn.endswith("w3.weight") or pn.endswith("compute_output.weight"):
+                nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layers))
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -238,11 +303,26 @@ class Llama(LlamaPreTrainedModel):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, tokens: torch.Tensor, targets: Optional[torch.Tensor] = None) -> torch.Tensor:
-        _batch_size, seqlen = tokens.shape
-        h = self.tok_embeddings(tokens)
-        h = self.dropout(h)
+    def forward(
+        self, tokens: torch.Tensor, targets: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Defines the forward pass of the Llama model.
 
+        Args:
+            tokens (torch.Tensor): Input token indices.
+            targets (Optional[torch.Tensor]): Target token indices for training.
+
+        Returns:
+            Tuple containing:
+            - logits: Logits over the vocabulary.
+            - h: Hidden states of the last layer.
+        """
+        _batch_size, _ = tokens.shape  # batch size, sequence length
+
+        # Embed tokens and apply dropout.
+        h = self.dropout(self.tok_embeddings(tokens))
+
+        # Pass through each transformer layer.
         for layer in self.layers:
             h = layer(h)
         h = self.norm(h)
@@ -251,8 +331,9 @@ class Llama(LlamaPreTrainedModel):
             # if we are given some desired targets also calculate the loss
             logits = self.output(h)
         else:
-            # inference-time mini-optimization: only forward the output on the very last position
-            logits = self.output(h[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            logits = self.output(
+                h[:, [-1], :]
+            )  # note: using list [-1] to preserve the time dim
 
         return logits, h
 
@@ -269,52 +350,88 @@ class Llama(LlamaPreTrainedModel):
         """
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = idx if idx.size(1) <= self.params.max_seq_len else idx[:, -self.params.max_seq_len:]
-            # forward the model to get the logits for the index in the sequence
+            idx_cond = (
+                idx
+                if idx.size(1) <= self.params.max_seq_len
+                else idx[:, -self.params.max_seq_len :]
+            )
+            # forward the model to get the logits for the last index in the sequence
             logits, _ = self(idx_cond)
-            logits = logits[:, -1, :] # crop to just the final time step
-            # todo
-            raise NotImplementedError
+            logits = logits[:, -1, :]  # get the logits at the final time step
 
-            if temperature == 0.0:
-                # select the single most likely index
-                idx_next = None
+            # Generate the next token index using temperature sampling
+            # If temperature is close to 0, select the single most likely index
+            if abs(temperature) < 1e-6:
+                idx_next = torch.argmax(logits, dim=-1, keepdim=True)
+
+            # else, sample from the logits to introduce randomness for the next token
             else:
-                '''
-                Perform temperature sampling:
-                1) identify  the logits at the final step.
-                2) scale (divide) these probabilities by the given temperature.
-                3) normalize the scaled logits with a softmax to obtain scaled probabilities.
-                4) sample from the scaled probability distribution.
+                # scale (divide) the logits/probabilities by the given temperature
+                idx_next = logits / temperature
 
-                Note that we are not using top-k sampling/nucleus sampling in this procedure.
-                '''
-                idx_next = None
+                # normalize the scaled logits with a softmax to obtain probabilities
+                idx_next = F.softmax(idx_next, dim=-1)
+
+                # sample from the scaled probability distribution
+                idx_next = torch.multinomial(idx_next, num_samples=1)
+
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
 
-
         return idx
 
-def load_pretrained(checkpoint):
-  device = 'cuda' if torch.cuda.is_available() else 'cpu' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
-  #dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32' or 'bfloat16' or 'float16'
-  dtype = "float32"
 
-  torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
-  torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
-  device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
-  ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
-  ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
+def load_pretrained(checkpoint: str) -> Llama:
+    """Load a pre-trained Llama model from a checkpoint file and return the model."""
 
-  # init from a model saved in a specific directory
-  checkpoint_dict = torch.load(checkpoint, map_location=device)
-  config = LlamaConfig(**checkpoint_dict['model_args'])
-  model = Llama(config)
-  state_dict = checkpoint_dict['model']
-  unwanted_prefix = '_orig_mod.'
-  for k,v in list(state_dict.items()):
-      if k.startswith(unwanted_prefix):
-          state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
-  model.load_state_dict(state_dict, strict=False)
-  return model
+    # Determine the device to use for the model
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
+
+    # Decide mixed precision based on device availability
+    dtype = (
+        "bfloat16"
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+        else "float32"  # 'float32' or 'bfloat16' or 'float16'
+    )
+
+    # Adjust settings for CUDA to allow TensorFlow32 precision if available
+    if device == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True  # Allow TensorFlow32 on matmul
+        torch.backends.cudnn.allow_tf32 = True  # Allow TensorFlow32 on cuDNN
+
+    # Setup automatic mixed precision context if CUDA is available
+    device_type = device if device in ["cuda"] else "cpu"
+    ptdtype = {
+        "float32": torch.float32,
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+    }[dtype]
+
+    ctx = (
+        nullcontext()
+        if device_type != "cuda"
+        else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
+    )
+
+    # Load the model checkpoint to the selected device
+    # Apply automatic mixed precision context if relevant
+    with ctx:
+        # init from a model saved in a specific directory
+        checkpoint_dict = torch.load(checkpoint, map_location=device)
+        config = LlamaConfig(**checkpoint_dict["model_args"])
+        model = Llama(config)
+        state_dict = checkpoint_dict["model"]
+
+        # If there are prefixed keys in the state dict (often from distributed training), adjust them
+        unwanted_prefix = "_orig_mod."
+        for k, v in list(state_dict.items()):
+            if k.startswith(unwanted_prefix):
+                state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
+
+        model.load_state_dict(state_dict, strict=False)
+        return model

@@ -1,4 +1,6 @@
-from typing import Dict, List, Optional, Union, Tuple, BinaryIO
+import argparse
+import copy
+import json
 import os
 import sys
 import json
@@ -337,10 +339,59 @@ def get_parameter_dtype(parameter: Union[nn.Module]):
 
 
 def get_extended_attention_mask(attention_mask: Tensor, dtype) -> Tensor:
-  # attention_mask [batch_size, seq_length]
-  assert attention_mask.dim() == 2
-  # [batch_size, 1, 1, seq_length] for multi-head attention
-  extended_attention_mask = attention_mask[:, None, None, :]
-  extended_attention_mask = extended_attention_mask.to(dtype=dtype)  # fp16 compatibility
-  extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
-  return extended_attention_mask
+    # attention_mask [batch_size, seq_length]
+    assert attention_mask.dim() == 2
+    # [batch_size, 1, 1, seq_length] for multi-head attention
+    extended_attention_mask = attention_mask[:, None, None, :]
+    extended_attention_mask = extended_attention_mask.to(
+        dtype=dtype
+    )  # fp16 compatibility
+    extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+    return extended_attention_mask
+
+
+def get_device(args: argparse.Namespace) -> str:
+    """Return the device as string
+
+    Args:
+        args (argparse.Namespace): Arguments from command line
+
+    Returns:
+        str: Device as string
+    """
+    if not args.use_gpu:
+        print("🦥 Using CPU. If you want to use GPU, please set the use_gpu flag.")
+        device = torch.device("cpu")
+    else:
+        if torch.cuda.is_available():
+            print("🏃‍♀️‍➡️Using CUDA GPU")
+            device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            print("🏃‍♀️‍➡️Using Metal GPU")
+            device = torch.device("mps")
+        else:
+            print("🦥GPU is not available. Fall back on CPU")
+            device = torch.device("cpu")
+    return device
+
+
+def extract_dataset_name(filepath: str) -> str:
+    """Extract the dataset name from a file path.
+
+    Args:
+        filepath (str): File path to extract dataset name from.
+
+    Examples:
+        data/sst-dev.txt -> sst
+        sst-dev.txt -> sst
+        data/cfimdb-dev.txt -> cfimdb
+        data/cfimdb-test.txt -> cfimdb
+        cfimdb-dev.txt -> cfimdb
+    """
+    # Regex explanation:
+    # - [^/]*$: Matches any characters not including a forward slash at the end of the string.
+    # - ([^/-]+): Captures one or more characters that are not a slash or hyphen.
+    # - -[^-]+\.txt$: Ensures the pattern ends with a hyphen followed by characters that do not include another hyphen, and ends with .txt
+    match = re.search(r"([^/-]+)-[^-]+\.txt$", filepath)
+    if match:
+        return match.group(1)
