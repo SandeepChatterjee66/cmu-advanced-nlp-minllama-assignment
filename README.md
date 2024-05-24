@@ -63,7 +63,7 @@ Test Accuracy: 0.213
 ### Classification Finetuning
 
 ```shell
-python run_llama.py --option finetune --epochs 5 --lr 2e-5 --batch_size 80  --train data/sst-train.txt --dev data/sst-dev.txt --test data/sst-test.txt --label-names data/sst-label-mapping.json --dev_out sst-dev-finetuning-output.txt --test_out sst-test-finetuning-output.txt [--use_gpu]
+python run_llama.py --option finetune --epochs 5 --lr 2e-5 --batch_size 80  --train data/sst-train.txt --dev data/sst-dev.txt --test data/sst-test.txt --label-names data/sst-label-mapping.json --dev_out output/sst-dev-finetuning-output.txt --test_out output/sst-test-finetuning-output.txt [--use_gpu]
 ```
 
 Finetuning for SST:
@@ -71,12 +71,12 @@ Dev Accuracy: 0.414 (0.014)
 Test Accuracy: 0.418 (0.017)
 
 ```shell
-python run_llama.py --option finetune --epochs 5 --lr 2e-5 --batch_size 10  --train data/cfimdb-train.txt --dev data/cfimdb-dev.txt --test data/cfimdb-test.txt --label-names data/cfimdb-label-mapping.json --dev_out cfimdb-dev-finetuning-output.txt --test_out cfimdb-test-finetuning-output.txt [--use_gpu]
+python run_llama.py --option finetune --epochs 5 --lr 2e-5 --batch_size 10  --train data/cfimdb-train.txt --dev data/cfimdb-dev.txt --test data/cfimdb-test.txt --label-names data/cfimdb-label-mapping.json --dev_out output/cfimdb-dev-finetuning-output.txt --test_out output/cfimdb-test-finetuning-output.txt [--use_gpu]
 ```
 
 Finetuning for CFIMDB:
 Dev Accuracy: 0.800 (0.115)
-Test Accuracy: -
+Test Accuracy: 0.459
 
 Mean reference accuracies over 10 random seeds with their standard deviation shown in brackets.
 
