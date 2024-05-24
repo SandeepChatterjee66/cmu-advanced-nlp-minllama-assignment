@@ -6,8 +6,9 @@ import re
 import sys
 import time
 from contextlib import nullcontext
+from pprint import pprint
 from types import SimpleNamespace
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -23,9 +24,11 @@ from tqdm import tqdm
 
 # change it with respect to the original model
 from src.classifier import LlamaEmbeddingClassifier, LlamaZeroShotClassifier
+from src.config import LlamaConfig
 from src.llama import Llama, load_pretrained
 from src.optimizer import AdamW
 from src.tokenizer import Tokenizer
+from src.utils import get_device
 
 TQDM_DISABLE = False
 
@@ -45,7 +48,7 @@ def seed_everything(seed=11711):
 class LlamaDataset(Dataset):
     """Class to load the dataset"""
 
-    def __init__(self, dataset, args, eos: bool = False):
+    def __init__(self, dataset: Dataset, args: argparse.Namespace, eos: bool = False):
         self.dataset = dataset
         self.p = args
         self.tokenizer = Tokenizer(max_len=args.max_sentence_len)
@@ -54,11 +57,11 @@ class LlamaDataset(Dataset):
     def __len__(self):
         return len(self.dataset)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int):
         ele = self.dataset[idx]
         return ele
 
-    def pad_data(self, data):
+    def pad_data(self, data: List[Tuple[str, int, List[int]]]):
         sents = [x[0] for x in data]
         labels = [x[1] for x in data]
         encoding = [self.tokenizer.encode(s, bos=True, eos=self.eos) for s in sents]
@@ -72,7 +75,8 @@ class LlamaDataset(Dataset):
 
         return token_ids, labels, sents
 
-    def collate_fn(self, all_data):
+    def collate_fn(self, all_data: List[dict]) -> Dict[str, torch.Tensor]:
+        """Process the data to create the batched data"""
 
         token_ids, labels, sents = self.pad_data(all_data)
         batched_data = {
@@ -84,7 +88,6 @@ class LlamaDataset(Dataset):
         return batched_data
 
 
-# create the data which is a list of (sentence, label, token for the labels)
 def create_data(
     filename,
     tokenizer: Tokenizer,
@@ -92,7 +95,21 @@ def create_data(
     lower: bool = False,
     eos: bool = True,
     prompt_suffix: Optional[str] = None,
-):
+) -> Tuple[List[str], int] | List[str]:
+    """Create the data which is a list of (sentence, label, token for the labels)
+
+    Args:
+        filename (str): the file path to the data
+        tokenizer (Tokenizer): the tokenizer object
+        flag (str): the flag to specify the data is train or valid
+        lower (bool): whether to lower the sentence
+        eos (bool): whether to add the eos token
+        prompt_suffix (Optional[str]): the suffix to add to the sentence
+
+    Returns: Tuple or List
+        data (List[str]): the list of (sentence, label, token for the labels)
+        num_labels (int): the number of labels
+    """
     # specify the tokenizer
     num_labels = {}
     data = []
@@ -111,6 +128,7 @@ def create_data(
                 num_labels[label] = len(num_labels)
             data.append((sent, label, tokens))
     print(f"load {len(data)} data from {filename}")
+    print("=====================================")
     if flag == "train":
         return data, len(num_labels)
     else:
@@ -118,7 +136,21 @@ def create_data(
 
 
 # perform model evaluation in terms of the accuracy and f1 score.
-def model_eval(dataloader, model, device):
+def model_eval(dataloader: DataLoader, model: torch.nn.Module, device: torch.device):
+    """Evaluate the model using the specified dataloader and model.
+
+    Args:
+        dataloader (DataLoader): the dataloader to evaluate the model
+        model (torch.nn.Module): the model to evaluate
+        device (torch.device): the device to run the model
+
+    Returns:
+        acc (float): the accuracy of the model
+        f1 (float): the f1 score of the model
+        y_pred (List[int]): the predicted labels
+        y_true (List[int]): the true labels
+        sents (List[str]): the sentences
+    """
     model.eval()  # switch to eval model, will turn off randomness like dropout
     y_true = []
     y_pred = []
@@ -143,7 +175,15 @@ def model_eval(dataloader, model, device):
     return acc, f1, y_pred, y_true, sents
 
 
-def save_model(model, optimizer, args, config, filepath):
+def save_model(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    args: argparse.Namespace,
+    config: LlamaConfig,
+    filepath: str,
+):
+    """Save the model to the specified file path."""
+
     save_info = {
         "model": model.state_dict(),
         "optim": optimizer.state_dict(),
@@ -158,17 +198,10 @@ def save_model(model, optimizer, args, config, filepath):
     print(f"save the model to {filepath}")
 
 
-def train(args):
-    if args.use_gpu:
-        if torch.cuda.is_available():
-            print("Using CUDA GPU")
-            device = torch.device("cuda")
-        elif torch.backends.mps.is_available():
-            print("Using Metal GPU")
-            device = torch.device("mps")
-        else:
-            print("GPU is not available. Using CPU")
-            device = torch.device("cpu")
+def train(args: argparse.Namespace):
+    """Train the model using the specified arguments."""
+
+    device = get_device(args)
 
     #### Load data
     # create the data and its corresponding datasets and dataloader
@@ -255,12 +288,27 @@ def train(args):
         )
 
 
-def generate_sentence(args, prefix, outfile, max_new_tokens=75, temperature=0.0):
+def generate_sentence(
+    args: argparse.Namespace,
+    prefix: str,
+    outfile: str,
+    max_new_tokens: int = 75,
+    temperature: float = 0.0,
+) -> None:
+    """Generate a sentence using the specified arguments from the command line
+
+    Args:
+        args (argparse.Namespace): the arguments from the command line
+        prefix (str): the prefix to continue the sentence from
+        outfile (str): the file path to save the generated sentence
+        max_new_tokens (int): the maximum number of tokens to generate
+        temperature (float): the temperature to generate the sentence
+    """
     with torch.no_grad():
-        device = torch.device("cuda") if args.use_gpu else torch.device("cpu")
+        device = get_device(args)
         ctx = (
             torch.amp.autocast(device_type="cuda", dtype=torch.float32)
-            if args.use_gpu
+            if args.use_gpu and device == "cuda"
             else nullcontext()
         )
         llama = load_pretrained(args.pretrained_model_path)
@@ -288,13 +336,17 @@ def generate_sentence(args, prefix, outfile, max_new_tokens=75, temperature=0.0)
 def write_predictions_to_file(
     split: str, outfile: str, acc: float, pred: list[str], sents: list[str]
 ):
+    """Write the predictions to the specified file."""
+
     with open(outfile, "w+") as f:
         print(f"{split} acc :: {acc :.3f}")
         for s, p in zip(sents, pred):
             f.write(f"{p} ||| {s}\n")
 
 
-def test_with_prompting(args):
+def test_with_prompting(args: argparse.Namespace):
+    """Test the model using the specified arguments from command line"""
+
     assert args.dev_out.endswith(
         "dev-prompting-output.txt"
     ), 'For saving prompting results, please set the dev_out argument as "<dataset>-dev-prompting-output.txt"'
@@ -304,7 +356,7 @@ def test_with_prompting(args):
 
     with torch.no_grad():
 
-        device = torch.device("mps") if args.use_gpu else torch.device("cpu")
+        device = get_device(args)
         #### Load data
         # create the data and its corresponding datasets and dataloader
         tokenizer = Tokenizer(args.max_sentence_len)
@@ -363,22 +415,29 @@ def test_with_prompting(args):
         )
 
 
-def test(args):
+def test(args: argparse.Namespace):
+    """Test the model using the specified arguments."""
+
     assert args.dev_out.endswith(
         "dev-finetuning-output.txt"
     ), 'For saving finetuning results, please set the dev_out argument as "<dataset>-dev-finetuning-output.txt"'
     assert args.test_out.endswith(
         "test-finetuning-output.txt"
     ), 'For saving finetuning results, please set the test_out argument as "<dataset>-test-finetuning-output.txt"'
+
     with torch.no_grad():
-        device = torch.device("cuda") if args.use_gpu else torch.device("cpu")
+        device = get_device(args)
         saved = torch.load(args.filepath)
         config = saved["model_config"]
+
+        # load the model and tokenizer
         model = LlamaEmbeddingClassifier(config)
         model.load_state_dict(saved["model"])
         model = model.to(device)
-        print(f"load model from {args.filepath}")
+        print(f"⬇️ load model from {args.filepath}")
         tokenizer = Tokenizer(args.max_sentence_len)
+
+        # create dev and test datasets and dataloaders
         dev_data = create_data(args.dev, tokenizer, "valid")
         dev_dataset = LlamaDataset(dev_data, args)
         dev_dataloader = DataLoader(
@@ -397,6 +456,7 @@ def test(args):
             collate_fn=test_dataset.collate_fn,
         )
 
+        # evaluate the model on the dev and test sets
         dev_acc, _, dev_pred, _, dev_sents = model_eval(dev_dataloader, model, device)
         test_acc, _, test_pred, _, test_sents = model_eval(
             test_dataloader, model, device
@@ -409,6 +469,8 @@ def test(args):
 
 
 def get_args():
+    """Get the arguments from the command line."""
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--train", type=str, default="data/cfimdb-train.txt")
     parser.add_argument("--dev", type=str, default="data/cfimdb-dev.txt")
@@ -463,13 +525,18 @@ def get_args():
     )
 
     args = parser.parse_args()
-    print(f"args: {vars(args)}")
+    print("Running with the following arguments:")
+    pprint(vars(args))
+    print("=====================================")
     return args
 
 
 if __name__ == "__main__":
     args = get_args()
-    args.filepath = f"{args.option}-{args.epochs}-{args.lr}.pt"  # save path
+    dataset = re.search(r"cfimdb|sst", args.train).group()
+    args.filepath = (
+        f"models/{args.option}-{dataset}-{args.epochs}-{args.lr}.pt"  # save path
+    )
     seed_everything(args.seed)  # fix the seed for reproducibility
 
     if args.option == "generate":
